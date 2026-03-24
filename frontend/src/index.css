@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-fusion-bg text-fusion-text font-sans;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-fusion-card/40 backdrop-blur-xl border border-white/10 rounded-2xl shadow-fusion-glow;
+  }
+  
+  .btn-primary {
+    @apply bg-fusion-accent text-fusion-bg font-bold py-3 px-6 rounded-full hover:scale-105 active:scale-[0.97] transition-all duration-200 text-center flex items-center justify-center;
+  }
+
+  .btn-outline {
+    @apply border-2 border-fusion-primary text-fusion-primary font-bold py-3 px-6 rounded-full hover:bg-fusion-primary hover:text-white transition-all duration-200 text-center flex items-center justify-center;
+  }
+
+  .input-field {
+    @apply bg-fusion-card border border-white/10 rounded-xl px-4 py-3 focus:border-fusion-primary focus:ring-2 focus:ring-fusion-primary/30 outline-none transition-all duration-200;
+  }
+
+  .floating-label-group {
+    @apply relative mb-4;
+  }
+
+  .floating-label {
+    @apply absolute left-4 top-3 text-white/50 transition-all duration-200 pointer-events-none;
+  }
+
+  .input-field:focus + .floating-label,
+  .input-field:not(:placeholder-shown) + .floating-label {
+    @apply -top-2 left-3 bg-fusion-card px-2 text-xs text-fusion-primary font-bold;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-fusion-bg;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-white/10 rounded-full hover:bg-white/20;
+}
