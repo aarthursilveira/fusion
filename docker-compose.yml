@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://postgres:831042cc9206124cc00d@fusion_core_postgre:5432/fusion_core?sslmode=disable
+      DATABASE_URL: postgres://postgres:831042cc9206124cc00d@fusion_db:5432/fusion_core?sslmode=disable
       JWT_SECRET: ${JWT_SECRET}
       NEXTFIT_API_URL: https://integracao.nextfit.com.br
       NEXTFIT_API_TOKEN: ${NEXTFIT_API_TOKEN:-}
