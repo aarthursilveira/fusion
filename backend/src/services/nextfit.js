@@ -11,6 +11,20 @@ const nextfit = axios.create({
   }
 });
 
+export const createNextFitMember = async (memberData) => {
+  if (!NEXTFIT_API_TOKEN) {
+    // Return a mocked nextfit_id since there's no active token
+    return {
+      success: true,
+      nextfit_id: `NF_${Math.floor(Math.random() * 100000)}`,
+      message: 'Mocked NextFit member created successfully'
+    };
+  }
+  // Integration structure is ready
+  const response = await nextfit.post('/members', memberData);
+  return response.data;
+};
+
 export const getMemberStatus = async (nextfit_id) => {
   // Simulate NextFit API call if token is missing
   if (!NEXTFIT_API_TOKEN) {

@@ -6,6 +6,8 @@ import { Check, ArrowRight, ArrowLeft, CreditCard, ShieldCheck, User as UserIcon
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
@@ -20,6 +22,8 @@ const Cadastro = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [availablePlans, setAvailablePlans] = useState([]);
+  const [submitError, setSubmitError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
 
   const { register, handleSubmit, watch, formState: { errors, isValid } } = useForm({
@@ -29,18 +33,29 @@ const Cadastro = () => {
   const formData = watch();
 
   useEffect(() => {
-    // Mock fetching plans
-    setAvailablePlans([
-      { id: 'p1', name: 'Plano Smart', price: 79.90, features: ['Acesso a 1 unidade', 'Horário livre'], duration: 'Mensal' },
-      { id: 'p2', name: 'Plano Black', price: 99.90, features: ['Acesso a todas as unidades', 'Levar acompanhante', 'Cadeira de massagem'], duration: 'Anual' },
-      { id: 'p3', name: 'Plano VIP', price: 149.90, features: ['Personal Trainer incluso 2x/semana', 'Acesso total', 'Brinde exclusivo'], duration: 'Semestral' },
-    ]);
+    const fetchPlans = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/member/available-plans`);
+        if (res.ok) {
+          const data = await res.json();
+          setAvailablePlans(data);
+        }
+      } catch {
+        // Fallback to mock data if API is unreachable
+        setAvailablePlans([
+          { id: 'p1', name: 'Plano Smart', price: 79.90, features: ['Acesso a 1 unidade', 'Horário livre'], duration: 'Mensal' },
+          { id: 'p2', name: 'Plano Black', price: 99.90, features: ['Acesso a todas as unidades', 'Levar acompanhante', 'Cadeira de massagem'], duration: 'Anual' },
+          { id: 'p3', name: 'Plano VIP', price: 149.90, features: ['Personal Trainer incluso 2x/semana', 'Acesso total', 'Brinde exclusivo'], duration: 'Semestral' },
+        ]);
+      }
+    };
+    fetchPlans();
   }, []);
 
   const nextStep = () => setCurrentStep(prev => Math.min(prev + 1, 3));
   const prevStep = () => setCurrentStep(prev => Math.max(prev - 1, 1));
 
-  const onSubmit = (data) => {
+  const onSubmit = async (data) => {
     if (currentStep < 3) {
       if (currentStep === 2 && !selectedPlan) {
         alert('Por favor, selecione um plano.');
@@ -48,9 +63,43 @@ const Cadastro = () => {
       }
       nextStep();
     } else {
-      console.log('Final Data:', { ...data, selectedPlan });
-      // Simulate registration
-      navigate('/login');
+      // Final step — call the real registration API
+      setSubmitError('');
+      setSubmitting(true);
+
+      try {
+        const res = await fetch(`${API_BASE}/api/auth/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            name: data.nome,
+            email: data.email,
+            password: data.senha,
+            cpf: data.cpf,
+            birthDate: data.nascimento,
+            phone: data.telefone || '',
+            planId: selectedPlan?.id,
+          }),
+        });
+
+        const result = await res.json();
+
+        if (!res.ok) {
+          if (result.errors) {
+            setSubmitError(result.errors.map(e => e.msg).join('. '));
+          } else {
+            setSubmitError(result.message || 'Erro ao criar conta.');
+          }
+          return;
+        }
+
+        navigate('/login');
+      } catch (err) {
+        setSubmitError('Erro de conexão com o servidor.');
+      } finally {
+        setSubmitting(false);
+      }
     }
   };
 
@@ -103,6 +152,12 @@ const Cadastro = () => {
           transition={{ duration: 0.3 }}
           className="glass-card max-w-[520px] w-full p-8 relative z-10 border-white/5"
         >
+          {submitError && (
+            <div className="mb-6 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm text-center">
+              {submitError}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit(onSubmit)}>
             {currentStep === 1 && (
               <div className="space-y-4">
@@ -114,8 +169,9 @@ const Cadastro = () => {
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="floating-label-group">
-                      <input {...register('cpf', { required: true })} type="text" placeholder=" " className="input-field w-full" />
+                      <input {...register('cpf', { required: true, pattern: /^\d{11}$/ })} type="text" placeholder=" " className="input-field w-full" maxLength={11} />
                       <label className="floating-label">CPF (Apenas números)</label>
+                      {errors.cpf && <span className="text-red-400 text-xs mt-1">CPF deve ter 11 dígitos</span>}
                     </div>
                     <div className="floating-label-group">
                       <input {...register('nascimento', { required: true })} type="date" placeholder=" " className="input-field w-full" />
@@ -123,13 +179,18 @@ const Cadastro = () => {
                     </div>
                   </div>
                   <div className="floating-label-group">
+                    <input {...register('telefone')} type="text" placeholder=" " className="input-field w-full" />
+                    <label className="floating-label">Telefone / WhatsApp</label>
+                  </div>
+                  <div className="floating-label-group">
                     <input {...register('email', { required: true })} type="email" placeholder=" " className="input-field w-full" />
                     <label className="floating-label">E-mail</label>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="floating-label-group">
-                      <input {...register('senha', { required: true })} type="password" placeholder=" " className="input-field w-full" />
+                      <input {...register('senha', { required: true, minLength: 8 })} type="password" placeholder=" " className="input-field w-full" />
                       <label className="floating-label">Senha</label>
+                      {errors.senha && <span className="text-red-400 text-xs mt-1">Mínimo 8 caracteres</span>}
                     </div>
                     <div className="floating-label-group">
                       <input {...register('confirmarSenha', { required: true })} type="password" placeholder=" " className="input-field w-full" />
@@ -223,10 +284,10 @@ const Cadastro = () => {
               )}
               <button 
                 type="submit" 
-                className="btn-primary flex-1 gap-2"
-                disabled={currentStep === 1 && !isValid}
+                className="btn-primary flex-1 gap-2 disabled:opacity-50"
+                disabled={(currentStep === 1 && !isValid) || submitting}
               >
-                {currentStep === 3 ? 'Finalizar Cadastro' : 'Continuar'}
+                {currentStep === 3 ? (submitting ? 'Criando conta...' : 'Finalizar Cadastro') : 'Continuar'}
                 {currentStep < 3 && <ArrowRight size={18} />}
               </button>
             </div>

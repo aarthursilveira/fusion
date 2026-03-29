@@ -1,13 +1,42 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 const Login = () => {
   const navigate = useNavigate();
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    // Simulate login
-    navigate('/painel');
+    setError('');
+    setLoading(true);
+
+    const email = e.target.email.value;
+    const password = e.target.password.value;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.message || 'Credenciais inválidas.');
+        return;
+      }
+
+      navigate('/painel');
+    } catch (err) {
+      setError('Erro de conexão com o servidor.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -25,6 +54,12 @@ const Login = () => {
 
         <h1 className="text-3xl font-heading font-bold mb-2 uppercase tracking-tight">Fusion Gym</h1>
         <p className="text-white/60 mb-8 text-center">Bem-vindo ao seu portal de membro</p>
+
+        {error && (
+          <div className="w-full mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm text-center">
+            {error}
+          </div>
+        )}
 
         <form onSubmit={handleLogin} className="w-full space-y-6">
           <div className="floating-label-group">
@@ -55,8 +90,12 @@ const Login = () => {
             </button>
           </div>
 
-          <button type="submit" className="btn-primary w-full shadow-lg shadow-fusion-accent/20">
-            Entrar
+          <button
+            type="submit"
+            className="btn-primary w-full shadow-lg shadow-fusion-accent/20 disabled:opacity-50"
+            disabled={loading}
+          >
+            {loading ? 'Entrando...' : 'Entrar'}
           </button>
         </form>
 

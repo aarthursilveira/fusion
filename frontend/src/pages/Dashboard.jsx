@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { Home, CreditCard, ClipboardList, User, Bell, LogOut, Menu } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Home, CreditCard, ClipboardList, User, Bell, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import InicioTab from './tabs/InicioTab';
 import PagamentoTab from './tabs/PagamentoTab';
 import MatriculaTab from './tabs/MatriculaTab';
@@ -21,15 +23,24 @@ const navItems = [
 
 const Dashboard = () => {
   const [activeTab, setActiveTab] = useState('inicio');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login', { replace: true });
+  };
+
+  const displayName = user?.email?.split('@')[0] || 'Membro';
+  const initials = displayName.slice(0, 2).toUpperCase();
 
   const renderTab = () => {
     switch (activeTab) {
-      case 'inicio': return <InicioTab />;
+      case 'inicio': return <InicioTab userName={displayName} />;
       case 'pagamento': return <PagamentoTab />;
-      case 'matricula': return <MatriculaTab />;
-      case 'perfil': return <PerfilTab />;
-      default: return <InicioTab />;
+      case 'matricula': return <MatriculaTab userName={displayName} />;
+      case 'perfil': return <PerfilTab userEmail={user?.email} />;
+      default: return <InicioTab userName={displayName} />;
     }
   };
 
@@ -40,7 +51,7 @@ const Dashboard = () => {
         <div className="p-8">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-fusion-primary rounded-xl flex items-center justify-center shadow-fusion-purple-glow">
-              <span className="text-xl font-bold italic italic">F</span>
+              <span className="text-xl font-bold italic">F</span>
             </div>
             <span className="text-xl font-heading font-bold uppercase tracking-tight">Fusion Portal</span>
           </div>
@@ -65,7 +76,10 @@ const Dashboard = () => {
         </nav>
 
         <div className="p-4 border-t border-white/5">
-          <button className="w-full flex items-center gap-4 px-4 py-3 rounded-xl text-white/40 hover:bg-red-500/10 hover:text-red-500 transition-all font-medium">
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-4 px-4 py-3 rounded-xl text-white/40 hover:bg-red-500/10 hover:text-red-500 transition-all font-medium"
+          >
             <LogOut size={20} />
             Sair
           </button>
@@ -77,7 +91,7 @@ const Dashboard = () => {
         {/* Top Bar */}
         <header className="p-6 md:p-8 flex justify-between items-center sticky top-0 bg-fusion-bg/80 backdrop-blur-lg z-30">
           <div>
-            <h2 className="text-xl md:text-2xl font-bold">Olá, Arthur 👋</h2>
+            <h2 className="text-xl md:text-2xl font-bold">Olá, {displayName} 👋</h2>
             <p className="text-xs md:text-sm text-white/40">Seja bem-vindo de volta!</p>
           </div>
           <div className="flex items-center gap-4">
@@ -86,7 +100,7 @@ const Dashboard = () => {
               <span className="absolute top-2 right-2 w-2 h-2 bg-fusion-accent rounded-full border-2 border-fusion-bg shadow-fusion-glow" />
             </button>
             <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-gradient-to-br from-fusion-primary to-purple-800 flex items-center justify-center font-bold text-lg shadow-fusion-purple-glow">
-              AS
+              {initials}
             </div>
           </div>
         </header>
@@ -131,7 +145,7 @@ const Dashboard = () => {
             )}
           </button>
         ))}
-        <button className="p-3 text-red-500/60 font-bold">
+        <button onClick={handleLogout} className="p-3 text-red-500/60 font-bold">
           <LogOut size={24} />
         </button>
       </nav>

@@ -1,0 +1,22 @@
+# Dependencies
+node_modules
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# Debug/dev scripts
+backend/reset.js
+
+# IDE
+.vscode
+.idea
+
+# Build artifacts
+frontend/dist
+backend/public
