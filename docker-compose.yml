@@ -4,12 +4,3 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    environment:
-      DATABASE_URL: postgres://fusion_user:troque_esta_senha_forte@fusion_db:5432/fusion_portal
-      JWT_SECRET: ${JWT_SECRET}
-      NEXTFIT_API_URL: https://integracao.nextfit.com.br
-      NEXTFIT_API_TOKEN: ${NEXTFIT_API_TOKEN:-}
-      N8N_WEBHOOK_URL: https://n8n.fusion.satomiq.com/webhook/portal
-      FRONTEND_URL: https://fusion.satomiq.com
-      NODE_ENV: production
-      PORT: 3000
