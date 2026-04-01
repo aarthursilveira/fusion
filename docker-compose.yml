@@ -4,3 +4,48 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - JWT_SECRET=${JWT_SECRET}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - CPF_HMAC_SECRET=${CPF_HMAC_SECRET}
+      - NEXTFIT_API_URL=${NEXTFIT_API_URL}
+      - NEXTFIT_API_TOKEN=${NEXTFIT_API_TOKEN:-}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-fusion_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-fusion_portal}
+    volumes:
+      - fusion_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-fusion_user} -d $${POSTGRES_DB:-fusion_portal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fusion_pgdata:

@@ -1,0 +1,530 @@
+================================================================================
+FUSION GYM PORTAL — DOCUMENTAÇÃO DE SEGURANÇA
+================================================================================
+Versão do documento: 1.0
+Data: 2026-03-31
+Classificação: Interno
+
+Este documento registra e defende cada ação de segurança realizada no portal,
+cobrindo hardening de autenticação, infraestrutura, validação de entrada,
+proteção DDoS e preparação para pentest/bug bounty.
+
+================================================================================
+PARTE 1 — AUDITORIA: VULNERABILIDADES ENCONTRADAS
+================================================================================
+
+As vulnerabilidades abaixo foram identificadas em auditoria de código antes
+do início das correções. Cada uma é referenciada ao longo da Parte 2.
+
+┌─────────────┬─────────────┬──────────────────────────────────────────────────┐
+│ ID          │ Severidade  │ Descrição                                        │
+├─────────────┼─────────────┼──────────────────────────────────────────────────┤
+│ VULN-01     │ CRÍTICO     │ .env com permissão world-readable (644)          │
+│ VULN-02     │ CRÍTICO     │ .env.example com placeholders fracos             │
+│ VULN-03     │ ALTO        │ Container Docker rodando como root               │
+│ VULN-04     │ ALTO        │ FRONTEND_URL ausente → CORS fallback localhost   │
+│ VULN-05     │ ALTO        │ Sem rate limit nos GETs de /api/member/*         │
+│ VULN-06     │ ALTO        │ Sem rate limit no PUT /api/member/profile        │
+│ VULN-07     │ MÉDIO       │ Logout não invalidava o JWT (7 dias de validade) │
+│ VULN-08     │ MÉDIO       │ Sem trust proxy → rate limit ineficaz atrás Nginx│
+│ VULN-09     │ MÉDIO       │ Bug no maskCpf (espaço extra na máscara)         │
+│ VULN-10     │ MÉDIO       │ Helmet CSP totalmente desativado fora de produção│
+│ VULN-11     │ MÉDIO       │ Endpoint troca de senha ausente (UI existia)     │
+│ VULN-12     │ MÉDIO       │ Body size limit 1 MB alto demais para API JSON   │
+│ VULN-13     │ BAIXO       │ Sem HEALTHCHECK no Docker                        │
+│ VULN-14     │ BAIXO       │ Sem npm audit no pipeline                        │
+│ VULN-15     │ BAIXO       │ Sem X-Request-ID para rastreamento               │
+│ VULN-16     │ BAIXO       │ Sem limite de memória no container               │
+│ VULN-17     │ BAIXO       │ Sem limites de comprimento nos campos de entrada │
+└─────────────┴─────────────┴──────────────────────────────────────────────────┘
+
+================================================================================
+PARTE 2 — CORREÇÕES IMPLEMENTADAS E DEFESA DAS DECISÕES
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-01 — Permissão 600 no arquivo .env
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/.env
+Ação: chmod 600 backend/.env
+
+Defesa:
+  O arquivo .env continha DATABASE_URL e JWT_SECRET. Com permissão 644
+  (world-readable), qualquer usuário do sistema — ou processo comprometido
+  rodando com UID diferente — poderia ler as credenciais. Isso constitui
+  exposição direta de segredo em repouso.
+
+  A permissão 600 restringe leitura e escrita apenas ao proprietário do arquivo.
+  Esta é a configuração mínima recomendada pelo OWASP para arquivos de
+  configuração contendo segredos.
+
+  Em ambientes de CI/CD, o arquivo deve ser injetado via secret management
+  (ex: Docker Secrets, AWS Secrets Manager, Vault) e nunca montado como
+  arquivo simples com permissão liberal.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-02 — .env.example com instruções claras de geração de segredos
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: .env.example
+Ação: Reescrito com comandos de geração, variáveis FRONTEND_URL e CPF_HMAC_SECRET
+
+Defesa:
+  O arquivo original continha "troque_esta_senha_forte" e
+  "troque_por_uma_string_longa_e_aleatoria" como valores — placeholders que
+  um desenvolvedor inexperiente poderia copiar literalmente para o .env de
+  produção sem substituição.
+
+  O novo template inclui:
+  - Valores no formato SUBSTITUA_POR_... (claramente não funcionais)
+  - Comandos prontos para gerar segredos: openssl rand -base64 32 e
+    node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+  - FRONTEND_URL adicionado (necessário para CORS em produção — VULN-04)
+  - CPF_HMAC_SECRET documentado para uso futuro na proteção de CPF persistido
+  - DATABASE_URL incluído explicitamente (estava implícito antes)
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-03 — Dockerfile: processo rodando como não-root
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: Dockerfile (Stage 3)
+Ação: Criado usuário/grupo 'fusion', chown -R fusion:fusion /app, USER fusion
+
+Defesa:
+  Containers rodando como root (UID 0) amplificam qualquer vulnerabilidade de
+  execução de código remoto (RCE). Se um atacante explorar uma falha no Node.js
+  ou nas dependências, ele obtém root dentro do container — o que facilita
+  escape de container, escrita em volumes montados e pivotamento lateral.
+
+  O princípio do menor privilégio (POLP) exige que processos operem com apenas
+  as permissões necessárias. O servidor Express precisa apenas ler arquivos
+  estáticos e abrir a porta 3000 — operações que não requerem root.
+
+  O usuário 'fusion' (criado com addgroup -S / adduser -S) é um usuário de
+  sistema sem shell de login, sem diretório home exposto e sem senha.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-04 — FRONTEND_URL obrigatório: CORS explícito em produção
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/index.js (requiredEnvVars), .env.example
+Ação: Adicionado 'FRONTEND_URL' ao array de variáveis obrigatórias
+
+Defesa:
+  Sem FRONTEND_URL definido, a configuração de CORS usava fallback para
+  'http://localhost:5173'. Em produção, isso significa que:
+  1. Requests do domínio real seriam bloqueados (CORS failure)
+  2. Ou, se o fallback não fosse ativado, a origem ficaria undefined — o que
+     pode causar comportamento permissivo em alguns middlewares.
+
+  Ao adicionar FRONTEND_URL ao array requiredEnvVars, o servidor falha
+  imediatamente (process.exit(1)) se a variável não estiver definida em
+  produção. Esta falha explícita (fail-fast) é preferível a uma falha silenciosa
+  que seria descoberta apenas em produção.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-05 + VULN-06 — Rate limiting em todas as rotas de /api/member/*
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/routes/member.js
+Ação: Adicionados publicPlanLimiter, memberReadLimiter, profileUpdateLimiter
+
+Defesa:
+  Rotas sem rate limit são vetores diretos de DDoS de aplicação (Layer 7).
+  Um atacante com um token JWT válido (obtido por phishing, vazamento ou força
+  bruta) poderia disparar milhares de requests por segundo contra os endpoints
+  de dados, esgotando conexões com a API NextFit e o banco PostgreSQL.
+
+  Limites configurados:
+  - GET /available-plans (público): 30 req / 15 min / IP
+    Justificativa: Endpoint consultado uma vez durante cadastro. 30 é generoso
+    para uso legítimo e elimina scraping automatizado.
+
+  - GET /status, /payments, /plan (autenticados): 60 req / 15 min / IP
+    Justificativa: Um usuário normal abre o dashboard uma vez por sessão e
+    navega entre abas. 60 cobre uso intenso (4 req/min) sem impactar UX.
+
+  - PUT /profile (autenticado): 10 req / hora / IP
+    Justificativa: Atualização de dados raramente ocorre mais de 1-2 vezes ao
+    dia. 10/hora elimina ataques de enumeração e atualização em massa.
+
+  A validação de entrada (body validation com express-validator) foi adicionada
+  ao PUT /profile para garantir que campos inválidos sejam rejeitados antes
+  de chegar ao serviço externo.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-07 — Revogação de JWT: blacklist em memória + token de 15 minutos
+────────────────────────────────────────────────────────────────────────────────
+Arquivos afetados:
+  - backend/src/services/tokenBlacklist.js (novo)
+  - backend/src/middleware/auth.js
+  - backend/src/routes/auth.js (logout + change-password)
+Ação: Blacklist de jti + expiração reduzida de 7d para 15min
+
+Defesa:
+  O comportamento original de logout era limpar o cookie no cliente, mas o JWT
+  permanecia criptograficamente válido por 7 dias. Qualquer atacante que
+  interceptasse o cookie (XSS residual, session hijacking) poderia continuar
+  usando o token por até 7 dias após o logout da vítima.
+
+  Solução adotada — abordagem híbrida:
+
+  1. Token de curta duração (15 minutos):
+     A principal linha de defesa. Mesmo que a blacklist seja perdida em um
+     restart, o token expira em no máximo 15 minutos. Isso é padrão de
+     mercado para SPAs com autenticação stateless.
+
+  2. Blacklist em memória (Set de jti):
+     Garante revogação imediata na janela de 15 minutos. Usa o claim 'jti'
+     (JWT ID), um UUID único por token, como chave — mais robusto que armazenar
+     o token completo. A limpeza automática via setTimeout baseada no 'exp'
+     do token mantém o uso de memória delimitado.
+
+  3. claim 'jti' no payload:
+     Cada login gera um UUID único. Permite revogar um token específico sem
+     invalidar outros tokens do mesmo usuário (ex: múltiplos dispositivos).
+
+  Por que não Redis?
+     Redis adicionaria uma dependência de infraestrutura (novo serviço, conexão,
+     persistência, failover) sem benefício a esta escala de single-container.
+     A interface blacklistToken/isBlacklisted foi projetada para ser substituível:
+     se o sistema escalar para múltiplos containers, apenas a implementação
+     interna do tokenBlacklist.js precisa mudar para Redis SETEX — as chamadas
+     no middleware e nas rotas permanecem idênticas.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-08 — trust proxy para rate limiting correto atrás de Nginx
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/index.js
+Ação: app.set('trust proxy', 1) em produção
+
+Defesa:
+  Sem trust proxy, o Express usa o IP do socket da conexão TCP como identidade
+  do cliente. Atrás de um Nginx ou load balancer, todos os requests chegam do
+  mesmo IP interno (ex: 172.17.0.1), fazendo com que o rate limiter trate todos
+  os usuários como sendo o mesmo — ou um único usuário malicioso esvazie o
+  bucket de todos.
+
+  Com trust proxy=1, o Express confia no cabeçalho X-Forwarded-For injetado
+  pelo primeiro proxy (Nginx). O valor '1' significa "confiar em apenas um
+  nível de proxy" — evita que um atacante falsifique X-Forwarded-For enviando
+  múltiplos IPs no header.
+
+  A configuração é aplicada apenas em NODE_ENV=production para evitar que um
+  atacante em desenvolvimento local abuse do X-Forwarded-For sem um proxy real.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-09 — Correção do bug maskCpf
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/routes/auth.js (função maskCpf)
+Ação: Corrigida máscara de `***.***. ${cpf.slice(6,9)}` para
+      `***.${cpf.slice(3,6)}.${cpf.slice(6,9)}-${cpf.slice(9)}`
+
+Defesa:
+  O código original produzia a máscara incorreta "***.***. 789-01" com:
+  - Espaço antes do terceiro grupo (antes de slice(6,9))
+  - Segundo grupo substituído por *** em vez de exibir os dígitos reais
+    (o formato padrão de mascaramento de CPF exibe o terceiro grupo)
+
+  O formato correto é: ***.456.789-01 (primeiros 3 dígitos mascarados).
+  O CPF nunca é persistido no banco local — apenas transmitido para a API
+  NextFit via HTTPS e para o webhook n8n na forma mascarada. Ainda assim,
+  uma máscara incorreta pode expor dígitos sensíveis em logs.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-10 — Helmet CSP explícito em todos os ambientes
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/index.js
+Ação: Substituída a desativação condicional por diretivas CSP explícitas
+
+Defesa:
+  Content Security Policy (CSP) é a principal defesa contra XSS (Cross-Site
+  Scripting). Desativá-la em desenvolvimento significa que violações de CSP
+  são descobertas apenas em produção, quando são mais difíceis de corrigir.
+
+  A nova configuração:
+  - defaultSrc: "'self'" — bloqueia qualquer recurso externo não listado
+  - scriptSrc: Em produção, apenas "'self'" (sem unsafe-inline/unsafe-eval).
+    Em desenvolvimento, unsafe-inline/unsafe-eval são permitidos (necessário
+    para hot-reload do Vite).
+  - styleSrc: "'unsafe-inline'" — necessário para Tailwind CSS em ambos ambientes
+  - connectSrc: Inclui explicitamente a URL da API NextFit (necessário para
+    requests do frontend) e ws://localhost:* em desenvolvimento (Vite HMR)
+  - objectSrc: "'none'" — bloqueia plugins Flash/Java (obsoletos e perigosos)
+  - frameAncestors: "'none'" — proteção contra clickjacking (equivale a
+    X-Frame-Options: DENY)
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-11 — Implementação do endpoint PUT /change-password
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/routes/auth.js
+Ação: Adicionado endpoint PUT /api/auth/change-password
+
+Defesa:
+  A ausência de um endpoint de troca de senha é uma falha de segurança
+  funcional: usuários que suspeitam de comprometimento de senha não têm como
+  se proteger sem contato com suporte. Isso viola o princípio de que o usuário
+  deve ter controle sobre suas credenciais.
+
+  Implementação segura:
+  - Requer autenticação (authenticateToken): somente o usuário logado pode
+    trocar sua própria senha — sem reset por token externo ou link de email
+    (que seriam implementados separadamente)
+  - Verifica a senha atual com bcrypt.compare() antes de aceitar a nova —
+    impede que um atacante com acesso à sessão (ex: XSS residual) troque a
+    senha sem conhecer a atual
+  - Hash da nova senha com bcrypt (12 rounds) — mesma segurança do registro
+  - Invalida o token atual na blacklist após a troca — força re-login, o que
+    garante que qualquer sessão comprometida seja encerrada
+  - Rate limiting: 5 tentativas por hora — evita força bruta na senha atual
+  - Limite de comprimento: nova senha máx 128 chars — evita ataques de bcrypt
+    com strings longas (bcrypt trunca em 72 bytes, mas strings enormes podem
+    consumir CPU desnecessariamente antes do truncamento)
+  - Validação: nova senha diferente da atual — evita operação no-op
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-12 — Body size limit reduzido para 16kb
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/index.js
+Ação: express.json({ limit: '1mb' }) → express.json({ limit: '16kb' })
+
+Defesa:
+  Esta é uma API JSON-only que serve dados de membros de academia. O payload
+  maior em toda a aplicação é o formulário de cadastro (nome, email, CPF,
+  telefone, senha, data) — menos de 1 KB.
+
+  Um limite de 1 MB permite que um atacante envie payloads de ~1 MB a qualquer
+  endpoint (incluindo login, que é público), consumindo memória do Node.js
+  durante o parse JSON. Em combinação com múltiplos requests paralelos, isso
+  constitui um vetor de DDoS de aplicação por exaustão de memória.
+
+  16 KB é 16x o tamanho do maior payload legítimo — espaço mais do que
+  suficiente para qualquer extensão futura razoável — enquanto elimina o vetor
+  de ataque de payload grande.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-13 — HEALTHCHECK no Dockerfile
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: Dockerfile (Stage 3)
+Ação: Adicionada diretiva HEALTHCHECK
+
+Defesa:
+  Sem HEALTHCHECK, o Docker marca o container como 'healthy' imediatamente após
+  o processo iniciar, mesmo que o servidor Express ainda não esteja pronto para
+  receber requests (aguardando migrations do Prisma, conectando ao banco, etc.).
+
+  Orquestradores (Docker Compose, Kubernetes, ECS) usam o health check para:
+  - Aguardar disponibilidade antes de rotear tráfego
+  - Reiniciar automaticamente containers com falha
+  - Detectar degradação silenciosa (processo vivo mas não respondendo)
+
+  A configuração:
+  - interval: 30s — verifica a cada 30 segundos
+  - timeout: 5s — falha se não responder em 5 segundos
+  - retries: 3 — marca unhealthy após 3 falhas consecutivas
+  - start-period: 15s — grace period para inicialização (migrations)
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-14 — npm audit integrado ao Dockerfile e scripts
+────────────────────────────────────────────────────────────────────────────────
+Arquivos afetados: backend/package.json, frontend/package.json, Dockerfile
+Ação: Script "audit:security" adicionado; npm audit no Stage 2 do Dockerfile
+
+Defesa:
+  Dependências de terceiros são o vetor de ataque mais frequente em aplicações
+  Node.js (supply chain attacks, CVEs em pacotes populares). Sem verificação
+  automatizada, vulnerabilidades conhecidas podem permanecer em produção
+  indefinidamente.
+
+  O comando npm audit --audit-level=high falha apenas para vulnerabilidades
+  de severidade HIGH ou CRITICAL — ignorando LOW e MODERATE que frequentemente
+  não têm fix disponível ou não são exploráveis no contexto desta aplicação.
+
+  O || true no Dockerfile Stage 2 evita falha de build por vulnerabilidades
+  sem fix disponível, mas o relatório é exibido no log do build. Para maior
+  rigor, remova o || true e exija correção antes de cada deploy.
+
+  Script "audit:security" nos package.json permite execução manual:
+    cd backend && npm run audit:security
+    cd frontend && npm run audit:security
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-15 — X-Request-ID para rastreamento de requests
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/index.js
+Ação: Middleware de request tracing adicionado antes das rotas
+
+Defesa:
+  Sem identificador único por request, correlacionar logs de erro em produção
+  com requests específicos de usuários é inviável. Um atacante pode explorar
+  erros silenciosos que nunca são investigados por falta de rastreabilidade.
+
+  O middleware:
+  1. Lê o header X-Request-ID enviado pelo cliente/proxy (se presente)
+  2. Gera um UUID v4 caso não seja fornecido
+  3. Define o header X-Request-ID na resposta
+  4. Expõe req.requestId para uso nos logs de erro das rotas
+
+  Isso permite que o frontend inclua o request ID nas mensagens de erro ao
+  usuário ("Erro #abc123 — contate o suporte"), e que a equipe localize
+  rapidamente o stack trace correspondente nos logs do servidor.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-16 — Limites de memória no container e no processo Node
+────────────────────────────────────────────────────────────────────────────────
+Arquivos afetados: docker-compose.yml, Dockerfile
+Ação: Limites de memória e CPU no Compose; --max-old-space-size=512 no Node
+
+Defesa:
+  Sem limites de recursos, um único container pode consumir toda a memória do
+  host em caso de:
+  - Memory leak em dependência
+  - Ataque de DDoS causando acúmulo de requests na fila do event loop
+  - Bug no código que crie referências circulares não coletadas pelo GC
+
+  Limites configurados:
+  - Container: 768 MB limite, 256 MB reservado (Docker Compose deploy.resources)
+  - Node V8 heap: 512 MB (--max-old-space-size=512)
+
+  A diferença (768 MB container - 512 MB heap) deixa espaço para:
+  - Overhead do runtime Node (~50 MB)
+  - Buffer de stacks de chamadas
+  - Módulos nativos e addons
+
+  O flag --max-old-space-size faz o V8 iniciar GC agressivo antes de atingir
+  o limite, em vez de crashar abruptamente.
+
+────────────────────────────────────────────────────────────────────────────────
+VULN-17 — Limites de comprimento nos campos de entrada
+────────────────────────────────────────────────────────────────────────────────
+Arquivo afetado: backend/src/routes/auth.js (registerValidation)
+Ação: Adicionado .isLength({ max: N }) a todos os campos
+
+Defesa:
+  Validação de formato (regex, isEmail) verifica o padrão mas não o tamanho.
+  Sem limite de comprimento, um atacante pode enviar um campo 'name' de 100 MB
+  dentro do limite de body size de 16 KB (que é por request, não por campo).
+
+  O caso crítico é o campo 'password': bcrypt trunca silenciosamente a entrada
+  em 72 bytes. Uma senha de 10 KB e uma de 100 KB produzem o mesmo hash bcrypt,
+  mas processar a string antes do truncamento consome CPU. Com limite de 128
+  chars, eliminamos strings artificialmente longas sem impactar senhas reais.
+
+  Limites definidos com base em padrões da indústria:
+  - email: 254 chars (RFC 5321, §4.5.3.1.3)
+  - password: 128 chars (bem acima do truncamento bcrypt de 72 bytes)
+  - name: 100 chars (cobre nomes longos reais)
+  - cpf: 11 chars (formato fixo — redundante com regex mas explícito)
+  - phone: 11 chars (DDD + número com 9º dígito)
+  - birthDate: 10 chars (formato YYYY-MM-DD)
+
+================================================================================
+PARTE 3 — ARQUITETURA DE SEGURANÇA ATUAL
+================================================================================
+
+Autenticação e Sessão
+  - JWT em cookie HTTP-only (sem acesso via JavaScript — protege contra XSS)
+  - SameSite=strict — proteção CSRF (sem tokens CSRF adicionais necessários)
+  - secure=true em produção (cookie transmitido apenas via HTTPS)
+  - Expiração: 15 minutos
+  - Revogação imediata via blacklist de jti em memória
+  - Logout e troca de senha invalidam o token atual na blacklist
+
+Senhas
+  - bcrypt com cost factor 12 (~300ms por hash — resistente a força bruta)
+  - Mínimo 8 caracteres, máximo 128 caracteres
+  - Resposta genérica em falha de login ("Credenciais inválidas.") — não
+    revela se o email existe ou se a senha está errada (user enumeration)
+
+Rate Limiting (DDoS de aplicação / Layer 7)
+  - POST /login:               5 req / 15 min / IP
+  - POST /register:            3 req / hora / IP
+  - PUT /change-password:      5 req / hora / IP
+  - GET /available-plans:     30 req / 15 min / IP (público)
+  - GET /member/* (todos):    60 req / 15 min / IP (autenticado)
+  - PUT /member/profile:      10 req / hora / IP (autenticado)
+  - trust proxy=1 em produção — rate limit usa IP real via X-Forwarded-For
+
+Banco de Dados
+  - Prisma ORM — queries parametrizadas, SQL injection impossível
+  - CPF não persistido no banco local (apenas transmitido à API NextFit via HTTPS)
+  - Senhas armazenadas apenas como hash bcrypt (jamais em plaintext)
+
+Infraestrutura
+  - Container Docker: processo não-root (usuário 'fusion')
+  - HEALTHCHECK a cada 30s — reinicialização automática em falha
+  - Limites de memória: 768 MB container, 512 MB heap Node
+  - .env com permissão 600 (somente proprietário lê/escreve)
+  - Multi-stage build — imagem final sem ferramentas de desenvolvimento
+
+Cabeçalhos HTTP (Helmet)
+  - Strict-Transport-Security (HSTS) — força HTTPS
+  - X-Frame-Options: DENY (via frameAncestors: none) — anti-clickjacking
+  - X-Content-Type-Options: nosniff — anti-MIME sniffing
+  - Content-Security-Policy — configuração explícita em todos os ambientes
+  - X-Powered-By removido — não revela tecnologia do servidor
+
+Validação de Entrada
+  - express-validator em todas as rotas de mutação
+  - Body size limit: 16 KB (API JSON-only)
+  - Limites de comprimento por campo (RFC 5321, bcrypt, padrões de negócio)
+  - Sanitização: .trim() e .escape() nos campos de texto
+
+Rastreabilidade
+  - X-Request-ID em todas as respostas (UUID gerado por request)
+  - Logs de erro incluem mensagens (sem stack traces expostos ao cliente)
+
+================================================================================
+PARTE 4 — LIMITAÇÕES CONHECIDAS E RISCOS ACEITOS
+================================================================================
+
+RISCO-01: Blacklist de token em memória
+  Descrição: Em restart do processo, tokens blacklistados são perdidos.
+  Janela de risco: até 15 minutos (expiração do token)
+  Mitigação: Expiração de 15 minutos limita a janela de exploração.
+  Plano futuro: Substituir por Redis SETEX ao escalar para múltiplos containers.
+  Interface projetada para substituição sem mudança nas rotas.
+
+RISCO-02: Sem account lockout baseado em usuário
+  Descrição: Rate limit é por IP. Ataque distribuído (muitos IPs) pode tentar
+  múltiplas senhas contra a mesma conta.
+  Mitigação: bcrypt 12 rounds torna cada tentativa cara (~300ms).
+  Plano futuro: Contador de falhas por email no banco + lockout temporário.
+
+RISCO-03: Sem reset de senha por email
+  Descrição: Usuário que esquece a senha não tem fluxo de recuperação.
+  Risco de segurança: Baixo (não é uma falha de segurança, mas uma lacuna
+  funcional que pode levar usuários a práticas inseguras de suporte).
+  Plano futuro: Fluxo OTP por email com token de uso único e expiração de 1h.
+
+RISCO-04: Sem RBAC (controle de acesso baseado em roles)
+  Descrição: Todos os usuários autenticados têm o mesmo nível de acesso.
+  Justificativa: Aplicação de portal de cliente com um único role (member).
+  Não há rotas administrativas expostas. Aceitável para o escopo atual.
+
+RISCO-05: CPF transmitido em plaintext para API NextFit
+  Descrição: O CPF é enviado sem hash para a API externa (necessário para
+  identificação do membro no sistema NextFit).
+  Mitigação: Transmissão via HTTPS. CPF mascarado no webhook n8n.
+  CPF não é persistido no banco local.
+
+================================================================================
+PARTE 5 — CHECKLIST DE DEPLOY SEGURO
+================================================================================
+
+Antes de cada deploy em produção, verificar:
+
+  [ ] chmod 600 backend/.env
+  [ ] JWT_SECRET: mínimo 64 bytes hexadecimais, sem palavras de dicionário
+  [ ] FRONTEND_URL: domínio correto de produção (não localhost)
+  [ ] POSTGRES_PASSWORD: senha forte e única (não reutilizada de outros sistemas)
+  [ ] NODE_ENV=production definido
+  [ ] cd backend && npm run audit:security  (sem HIGH ou CRITICAL)
+  [ ] cd frontend && npm run audit:security (sem HIGH ou CRITICAL)
+  [ ] docker build confirma sucesso sem erros
+  [ ] docker inspect <imagem> | grep -i user  → deve mostrar 'fusion'
+  [ ] Smoke test: GET /health → { "status": "ok" }
+  [ ] Rate limit: 6x POST /api/auth/login → 6ª retorna HTTP 429
+  [ ] Logout: login → logout → GET /api/auth/me → HTTP 401 (token blacklistado)
+  [ ] CSP header presente na resposta (Content-Security-Policy)
+  [ ] X-Request-ID header presente na resposta
+
+================================================================================
+FIM DO DOCUMENTO
+================================================================================

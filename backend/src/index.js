@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import authRoutes from './routes/auth.js';
 import memberRoutes from './routes/member.js';
 import prisma from './config/prisma.js';
@@ -12,7 +13,7 @@ import prisma from './config/prisma.js';
 dotenv.config();
 
 // ── Validate critical environment variables ───────────────
-const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
+const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET', 'FRONTEND_URL'];
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
     console.error(`FATAL: Environment variable ${envVar} is not defined. Exiting.`);
@@ -37,9 +38,32 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3000;
 
+// ── Proxy Trust (necessário para rate limiting correto atrás de Nginx/load balancer)
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 // ── Security Headers ──────────────────────────────────────
+const isDev = process.env.NODE_ENV !== 'production';
+
 app.use(helmet({
-  contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: [
+        "'self'",
+        process.env.NEXTFIT_API_URL || 'https://api.nextfit.com.br',
+        ...(isDev ? ["ws://localhost:*"] : []),
+      ],
+      fontSrc: ["'self'", "data:"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
 }));
 
 // ── CORS ──────────────────────────────────────────────────
@@ -48,8 +72,17 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(express.json({ limit: '1mb' }));
+// Limite reduzido: API JSON-only não precisa de mais de 16kb
+app.use(express.json({ limit: '16kb' }));
 app.use(cookieParser());
+
+// ── Request Tracing ───────────────────────────────────────
+app.use((req, res, next) => {
+  const requestId = req.headers['x-request-id'] || randomUUID();
+  req.requestId = requestId;
+  res.setHeader('X-Request-ID', requestId);
+  next();
+});
 
 // Serve static files from the React app
 app.use(express.static(path.join(__dirname, '../public')));
